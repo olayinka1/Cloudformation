@@ -1,0 +1,332 @@
+Description: Apache(linux) With AWS::CloudFormation::Init
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 key pair for SSH access to the EC2 instance.
+    Type: AWS::EC2::KeyPair::KeyName
+  VpcId:
+    Type: 'AWS::EC2::VPC::Id'
+    Description: VpcId of your existing Virtual Private Cloud (VPC)
+    ConstraintDescription: Select fromt the list of VPC  
+Resources:
+  WebServerLinux:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - mountEBS
+            - config-cfn-hup
+            - deployCode           
+        installPackages:
+          commands:
+            1updateApt:
+              command: 'sudo yum update -y'
+            2installHttpd:
+              command: 'yum install httpd -y'
+            3installHttpd:
+              command: 'service httpd start'
+#            4installHttpd:
+#              command: 'echo "<html><h1>Hello AWS World running on Linux on port 80m installPackages </h1></html>" > /var/wwww/html/index.html'  
+  
+        mountEBS:
+          commands:
+            1checkMakeFSCommand:
+              command: 'sudo file -s /dev/xvdb | grep -v "filesystem" | grep "data" > /dev/null && sudo mkfs -t ext4 /dev/xvdb'
+            2createMountDir:
+              command: 'sudo mkdir -p /webMnt'
+            3mountEBSCommand:
+              command: 'sudo mount /dev/xvdb /webMnt'
+            4backupFSTab:
+              command: 'sudo cp /etc/fstab /etc/fstab.orig'
+            5updateFSTab:
+              command: 'echo "/dev/xvdb /webMnt   ext4    defaults,nofail        0       2" | sudo tee --append /etc/fstab > /dev/null' 
+   
+        deployCode:
+          # This can be used to pull code 
+          commands:
+            1makeDeployDir:
+              command: 'sudo mkdir -p /webMnt/www/html'
+            2copyCode:
+              command: 'echo "<html><h1>Hello AWS World running on Linux on port 80.. d</h1></html>" > /webMnt/www/html/index.html'
+              cwd : "~"
+            3changePerm:
+              command: 'sudo chmod -R 755 /webMnt/www'     
+#            4sed1:
+#              command: 'sudo sed -i 's_var/www_webMnt/www_' httpd.conf' 
+#            5sed2:
+#              command: 'sudo sed -i 's_DocumentRoot \"/var/www_DocumentRoot \"/webMnt/www_' httpd.conf'
+            6restartApache:
+              command: 'sudo apachectl restart'
+
+        config-cfn-hup:
+          files:
+            #cfn-hup configuration 
+            '/etc/cfn/cfn-hup.conf':
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+            '/etc/cfn/hooks.d/cfn-auto-reloader.conf':
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.WebServerLinux.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource WebServerLinux --region ${AWS::Region}
+          commands: 
+            enable-cfn-hup:
+              command: "echo \"$CFNTEST\" > test2.txt" 
+
+    Properties:
+      ImageId: ami-0615132a0f36d24f4
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Sub "${AWS::Region}a"
+#     SubnetId: !Ref mySubnet      
+#      SecurityGroupIds:
+#        - !GetAtt MyVPCNew.DefaultSecurityGroup  
+      SecurityGroups:
+        - !Ref MyCompanyWideSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdb
+          Ebs:
+            Encrypted: false
+            VolumeSize: 1
+            VolumeType: gp2
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          yum install httpd -y
+          service httpd start
+          chkconfig httpd on
+          cd /var/www/html
+          echo "<html><h1>Hello AWS World running on Linux on port 80.u</h1></html>" > index.html
+          yum update -y aws-cfn-bootstrap     
+          /opt/aws/bin/cfn-init -v -c default --stack ${AWS::StackId} --resource WebServerLinux --region ${AWS::Region}
+      Tags:
+        - Key: Department
+          Value: Developers
+        - Key: EmployeeID
+          Value: AWS::AccountId
+        - Key: Name
+          Value: WebServerLinux
+
+#########################################
+########### Windows Instance ############
+  WebServerWindows:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - config-cfn-hup
+            - configureIIS
+            - installPackages
+            - mountEBS
+            - deployCode
+            - copyIndex
+        configureIIS:
+          commands:
+            InstallIIS:
+              command: 'powershell.exe -Command Install-WindowsFeature -name Web-Server -IncludeManagementTools'
+              waitAfterCompletion: "10"
+        installPackages:
+          files:
+            'c:\cfn\mountEBS.ps1':
+              content: !Sub |
+                $diskNumber = (Get-Disk | ? { ($_.OperationalStatus -eq "Offline") -and ($_."PartitionStyle" -eq "RAW") }).Number
+                Initialize-Disk -Number $diskNumber -PartitionStyle "MBR"
+                $part = New-Partition -DiskNumber $diskNumber -UseMaximumSize -IsActive -AssignDriveLetter
+                Format-Volume -DriveLetter $part.DriveLetter -Confirm:$TRUE
+                
+            'c:\cfn\deployCode.ps1':
+              content: !Sub |
+                new-item -type directory -path d:\\webMnt\\www\\html -Force
+                new-website -name WinEC2WebServer -port 80 -physicalpath d:\webMnt\www\html -force
+                remove-website -name "Default Web Site"
+                start-website -name WinEC2WebServer
+
+            'c:\cfn\index.ps1':
+              content: !Sub |
+                <html><h1>Hello AWS World running on Windows on port 80</h2></html>
+
+        mountEBS:
+          commands:
+            1checkMakeFSCommand:
+              command: 'powershell.exe -Command c:\\cfn\\mountEBS.ps1'
+              waitAfterCompletion: "10"
+        deployCode:
+          commands:
+            deployCode:
+              command: 'powershell.exe -Command c:\\cfn\\deployCode.ps1'
+              waitAfterCompletion: "10"
+
+        copyIndex:
+          commands:
+            copyIndex:
+              command: 'powershell.exe -Command Copy-Item "c:\cfn\index.ps1" "d:\webMnt\www\html\index.html"'
+              waitAfterCompletion: "10"
+
+        config-cfn-hup:
+          files:
+            #cfn-hup configuration 
+            'c:\cfn\cfn-hup.conf':
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+            'c:\cfn\hooks.d\cfn-auto-reloader.conf':
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.WebServerWindows.Metadata.AWS::CloudFormation::Init
+                action=cfn-init.exe -v --stack ${AWS::StackId} --resource WebServerWindows --region ${AWS::Region}
+          services:
+            windows:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - 'c:\cfn\cfn-hup.conf'
+                  - 'c:\cfn\hooks.d\cfn-auto-reloader.conf'
+    
+    Properties:
+      ImageId: ami-0e0e935d0209fced7
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Sub "${AWS::Region}b"
+#      SecurityGroupIds:
+#        - !GetAtt MyVPCNew.DefaultSecurityGroup     
+      SecurityGroups:
+        - !Ref MyCompanyWideSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdb
+          Ebs:
+            Encrypted: false
+            VolumeSize: 1
+            VolumeType: gp2
+            DeleteOnTermination: true
+      Tags:
+        - Key: Department
+          Value: Developers
+        - Key: EmployeeID
+          Value: AWS::AccountId
+        - Key: Name
+          Value: WebServerWindows
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              <script>
+            - 'cfn-init.exe -v --stack '
+            - !Ref 'AWS::StackId'
+            - ' --resource WebServerWindows'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+            - 'cfn-signal.exe -s true '
+            - !Base64 
+              Ref: WinWaitHandle
+            - |+
+            - </script>
+
+  WinWaitHandle:
+    Type: 'AWS::CloudFormation::WaitConditionHandle'
+
+  WinWaitCondition:
+    Type: 'AWS::CloudFormation::WaitCondition'
+    DependsOn: WebServerWindows
+    Properties:
+      Handle: !Ref WinWaitHandle
+      Timeout: '400'
+
+#############################################
+############ ElasticLoadBalancingV1 Config ############
+  # Security Group for the Web ELB
+  StackELBSG:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: SecurityGroupDescForELB #!Join [ "-", [ !FindInMap [ !Ref Region, DisplayName, name ], "ELB Sec Grp" ] ]
+      VpcId: 
+        Ref: VpcId
+#      VpcId: {'Fn::ImportValue': !Sub '${ParentVPCStack}-VPC'}
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: "Name"
+          Value: "ELB-SEC-GRP"
+
+  # ElasticLoadBalancing
+  StackELB: 
+    Type: "AWS::ElasticLoadBalancing::LoadBalancer"
+    Properties:
+      AvailabilityZones:
+      - ap-southeast-1a
+      - ap-southeast-1b
+      Listeners:
+        - InstancePort: '80'
+          LoadBalancerPort: '80'
+          Protocol: "HTTP"
+      HealthCheck:
+        Target: "TCP:80"
+        Timeout:  '5'
+        Interval: '10'
+        UnhealthyThreshold: '10'
+        HealthyThreshold: '3'
+      ConnectionSettings:
+        IdleTimeout: '60'
+      CrossZone: true
+      ConnectionDrainingPolicy:
+        Enabled: true
+        Timeout: 120
+      Instances:
+        - Ref: WebServerWindows
+        - Ref: WebServerLinux      
+      SecurityGroups:
+        - Ref: StackELBSG
+      Tags: 
+        - Key: "Name"
+          Value: "Stack-ELB1"
+
+  MyCompanyWideSecurityGroup:
+     Type: AWS::EC2::SecurityGroup
+     Properties:
+      GroupDescription: Enable SSH access via port 22 + RDP 3389
+      SecurityGroupIngress:
+        # SSH
+      - CidrIp: 0.0.0.0/0
+        FromPort: 22
+        IpProtocol: tcp
+        ToPort: 22
+        # RDP
+      - CidrIp: 0.0.0.0/0
+        FromPort: 3389
+        IpProtocol: tcp
+        ToPort: 3389
+      - CidrIp: 0.0.0.0/0
+        FromPort: 80
+        IpProtocol: tcp
+        ToPort: 80    
+########################800
+
+Outputs:
+  InstanceId:
+    Description: Instance Id of the newly created linux EC2 instance
+    Value: Ref WebServerLinux
+    Export:
+      Name: !Sub "${AWS::StackName}-Instance"
+  MyEC2InstancePublicIP:
+    Value: !GetAtt WebServerLinux.PublicIp
+  PublicSubnets:
+    Value: Ref PublicSubnets   
